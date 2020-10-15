@@ -93,7 +93,7 @@ class RubyCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     }
   }
 
-  override def runRead(): Unit = {
+  override def runRead(name: List[String]): Unit = {
     out.puts("_read")
   }
 
@@ -352,10 +352,10 @@ class RubyCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
         s"$io.read_bytes_full"
       case BytesTerminatedType(terminator, include, consume, eosError, _) =>
         s"$io.read_bytes_term($terminator, $include, $consume, $eosError)"
-      case BitsType1 =>
-        s"$io.read_bits_int(1) != 0"
-      case BitsType(width: Int) =>
-        s"$io.read_bits_int($width)"
+      case BitsType1(bitEndian) =>
+        s"$io.read_bits_int_${bitEndian.toSuffix}(1) != 0"
+      case BitsType(width: Int, bitEndian) =>
+        s"$io.read_bits_int_${bitEndian.toSuffix}($width)"
       case t: UserType =>
         val addParams = Utils.join(t.args.map((a) => translator.translate(a)), ", ", ", ", "")
         val addArgs = if (t.isOpaque) {
@@ -447,6 +447,15 @@ class RubyCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     out.puts(s"SEQ_FIELDS = [$seqStr]")
   }
 
+  override def classToString(toStringExpr: Ast.expr): Unit = {
+    out.puts
+    out.puts("def inspect")
+    out.inc
+    out.puts(translator.translate(toStringExpr))
+    out.dec
+    out.puts("end")
+  }
+
   override def idToStr(id: Identifier): String = {
     id match {
       case NamedIdentifier(name) => Utils.lowerUnderscoreCase(name)
@@ -469,11 +478,11 @@ class RubyCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     attrId: Identifier,
     attrType: DataType,
     checkExpr: Ast.expr,
-    errName: String,
+    err: KSError,
     errArgs: List[Ast.expr]
   ): Unit = {
     val errArgsStr = errArgs.map(translator.translate).mkString(", ")
-    out.puts(s"raise $errName.new($errArgsStr) if not ${translator.translate(checkExpr)}")
+    out.puts(s"raise ${ksErrorName(err)}.new($errArgsStr) if not ${translator.translate(checkExpr)}")
   }
 
   def types2class(names: List[String]) = names.map(type2class).mkString("::")

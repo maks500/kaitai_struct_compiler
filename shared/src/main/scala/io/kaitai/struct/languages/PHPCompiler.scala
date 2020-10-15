@@ -1,7 +1,7 @@
 package io.kaitai.struct.languages
 
 import io.kaitai.struct.datatype.DataType._
-import io.kaitai.struct.datatype.{CalcEndian, DataType, FixedEndian, InheritedEndian, KSError, NeedRaw}
+import io.kaitai.struct.datatype.{CalcEndian, DataType, FixedEndian, InheritedEndian, KSError, NeedRaw, UndecidedEndiannessError}
 import io.kaitai.struct.exprlang.Ast
 import io.kaitai.struct.format.{NoRepeat, RepeatEos, RepeatExpr, RepeatSpec, _}
 import io.kaitai.struct.languages.components._
@@ -118,14 +118,14 @@ class PHPCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     params.foreach((p) => handleAssignmentSimple(p.id, paramName(p.id)))
   }
 
-  override def runRead(): Unit =
+  override def runRead(name: List[String]): Unit =
     out.puts("$this->_read();")
 
   override def runReadCalc(): Unit = {
     out.puts
     out.puts("if (is_null($this->_m__is_le)) {")
     out.inc
-    out.puts("throw new \\RuntimeException(\"Unable to decide on endianness\");")
+    out.puts(s"throw new ${PHPCompiler.ksErrorName(UndecidedEndiannessError)};")
     out.dec
     out.puts("} else if ($this->_m__is_le) {")
     out.inc
@@ -343,10 +343,10 @@ class PHPCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
         s"$io->readBytesFull()"
       case BytesTerminatedType(terminator, include, consume, eosError, _) =>
         s"$io->readBytesTerm($terminator, $include, $consume, $eosError)"
-      case BitsType1 =>
-        s"$io->readBitsInt(1) != 0"
-      case BitsType(width: Int) =>
-        s"$io->readBitsInt($width)"
+      case BitsType1(bitEndian) =>
+        s"$io->readBitsInt${Utils.upperCamelCase(bitEndian.toSuffix)}(1) != 0"
+      case BitsType(width: Int, bitEndian) =>
+        s"$io->readBitsInt${Utils.upperCamelCase(bitEndian.toSuffix)}($width)"
       case t: UserType =>
         val addParams = Utils.join(t.args.map((a) => translator.translate(a)), "", ", ", ", ")
         val addArgs = if (t.isOpaque) {
@@ -484,11 +484,26 @@ class PHPCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
       case _: ArrayType => "array"
 
       case KaitaiStructType | CalcKaitaiStructType => kstructName
-      case KaitaiStreamType => kstreamName
+      case KaitaiStreamType | OwnedKaitaiStreamType => kstreamName
     }
   }
 
   override def ksErrorName(err: KSError): String = PHPCompiler.ksErrorName(err)
+
+  override def attrValidateExpr(
+    attrId: Identifier,
+    attrType: DataType,
+    checkExpr: Ast.expr,
+    err: KSError,
+    errArgs: List[Ast.expr]
+  ): Unit = {
+    val errArgsStr = errArgs.map(translator.translate).mkString(", ")
+    out.puts(s"if (!(${translator.translate(checkExpr)})) {")
+    out.inc
+    out.puts(s"throw new ${ksErrorName(err)}($errArgsStr);")
+    out.dec
+    out.puts("}")
+  }
 }
 
 object PHPCompiler extends LanguageCompilerStatic
@@ -504,7 +519,7 @@ object PHPCompiler extends LanguageCompilerStatic
 
   override def kstructName: String = "\\Kaitai\\Struct\\Struct"
 
-  override def ksErrorName(err: KSError): String = "\\Kaitai\\Struct\\" + err.name
+  override def ksErrorName(err: KSError): String = "\\Kaitai\\Struct\\Error\\" + err.name
 
   def types2classRel(names: List[String]) = names.map(type2class).mkString("\\")
 }

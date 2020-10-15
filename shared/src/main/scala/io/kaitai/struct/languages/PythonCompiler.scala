@@ -19,6 +19,7 @@ class PythonCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     with AllocateIOLocalVar
     with FixedContentsUsingArrayByteLiteral
     with UniversalDoc
+    with SwitchIfOps
     with NoNeedForFullClassPath {
 
   import PythonCompiler._
@@ -103,7 +104,7 @@ class PythonCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     }
   }
 
-  override def runRead(): Unit = {
+  override def runRead(name: List[String]): Unit = {
     out.puts("self._read()")
   }
 
@@ -368,10 +369,10 @@ class PythonCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
         s"$io.read_bytes_full()"
       case BytesTerminatedType(terminator, include, consume, eosError, _) =>
         s"$io.read_bytes_term($terminator, ${bool2Py(include)}, ${bool2Py(consume)}, ${bool2Py(eosError)})"
-      case BitsType1 =>
-        s"$io.read_bits_int(1) != 0"
-      case BitsType(width: Int) =>
-        s"$io.read_bits_int($width)"
+      case BitsType1(bitEndian) =>
+        s"$io.read_bits_int_${bitEndian.toSuffix}(1) != 0"
+      case BitsType(width: Int, bitEndian) =>
+        s"$io.read_bits_int_${bitEndian.toSuffix}($width)"
       case t: UserType =>
         val addParams = Utils.join(t.args.map((a) => translator.translate(a)), "", ", ", ", ")
         val addArgs = if (t.isOpaque) {
@@ -406,29 +407,36 @@ class PythonCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
   override def userTypeDebugRead(id: String, dataType: DataType, assignType: DataType): Unit =
     out.puts(s"$id._read()")
 
-  override def switchStart(id: Identifier, on: Ast.expr): Unit = {
+  override def switchStart(id: Identifier, on: Ast.expr): Unit = {}
+  override def switchCaseStart(condition: Ast.expr): Unit = {}
+  override def switchCaseEnd(): Unit = {}
+  override def switchElseStart(): Unit = {}
+  override def switchEnd(): Unit = {}
+
+  override def switchRequiresIfs(onType: DataType): Boolean = true
+  override def switchIfStart(id: Identifier, on: Ast.expr, onType: DataType): Unit = {
     out.puts(s"_on = ${expression(on)}")
   }
 
-  override def switchCaseFirstStart(condition: Ast.expr): Unit = {
+  override def switchIfCaseFirstStart(condition: Ast.expr): Unit = {
     out.puts(s"if _on == ${expression(condition)}:")
     out.inc
   }
 
-  override def switchCaseStart(condition: Ast.expr): Unit = {
+  override def switchIfCaseStart(condition: Ast.expr): Unit = {
     out.puts(s"elif _on == ${expression(condition)}:")
     out.inc
   }
 
-  override def switchCaseEnd(): Unit =
+  override def switchIfCaseEnd(): Unit =
     out.dec
 
-  override def switchElseStart(): Unit = {
+  override def switchIfElseStart(): Unit = {
     out.puts(s"else:")
     out.inc
   }
 
-  override def switchEnd(): Unit = {}
+  override def switchIfEnd(): Unit = {}
 
   override def instanceHeader(className: String, instName: InstanceIdentifier, dataType: DataType, isNullable: Boolean): Unit = {
     out.puts("@property")
@@ -465,6 +473,14 @@ class PythonCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     out.puts(s"SEQ_FIELDS = [$seqStr]")
   }
 
+  override def classToString(toStringExpr: Ast.expr): Unit = {
+    out.puts
+    out.puts("def __repr__(self):")
+    out.inc
+    out.puts(s"return ${translator.translate(toStringExpr)}")
+    out.dec
+  }
+
   def bool2Py(b: Boolean): String = if (b) { "True" } else { "False" }
 
   def idToStr(id: Identifier): String = {
@@ -496,13 +512,13 @@ class PythonCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     attrId: Identifier,
     attrType: DataType,
     checkExpr: Ast.expr,
-    errName: String,
+    err: KSError,
     errArgs: List[Ast.expr]
   ): Unit = {
     val errArgsStr = errArgs.map(translator.translate).mkString(", ")
     out.puts(s"if not ${translator.translate(checkExpr)}:")
     out.inc
-    out.puts(s"raise $errName($errArgsStr)")
+    out.puts(s"raise ${ksErrorName(err)}($errArgsStr)")
     out.dec
   }
 
@@ -534,12 +550,5 @@ object PythonCompiler extends LanguageCompilerStatic
     case _ => s"kaitaistruct.${err.name}"
   }
 
-  def types2class(name: List[String]): String = {
-    if (name.size > 1) {
-      val path = name.drop(1).map(x => type2class(x)).mkString(".")
-      s"self._root.$path"
-    } else {
-      type2class(name.head)
-    }
-  }
+  def types2class(name: List[String]): String = name.map(x => type2class(x)).mkString(".")
 }

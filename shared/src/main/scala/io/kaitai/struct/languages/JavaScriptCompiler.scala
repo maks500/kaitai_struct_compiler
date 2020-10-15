@@ -9,7 +9,7 @@ import io.kaitai.struct.languages.components._
 import io.kaitai.struct.translators.JavaScriptTranslator
 import io.kaitai.struct.{ClassTypeProvider, RuntimeConfig, Utils}
 
-class JavaScriptCompiler(val typeProvider: ClassTypeProvider, config: RuntimeConfig)
+class JavaScriptCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
   extends LanguageCompiler(typeProvider, config)
     with ObjectOrientedLanguage
     with UpperCamelCaseClasses
@@ -115,7 +115,7 @@ class JavaScriptCompiler(val typeProvider: ClassTypeProvider, config: RuntimeCon
     out.puts("}")
   }
 
-  override def runRead(): Unit = {
+  override def runRead(name: List[String]): Unit = {
     out.puts("this._read();")
   }
 
@@ -383,10 +383,10 @@ class JavaScriptCompiler(val typeProvider: ClassTypeProvider, config: RuntimeCon
         s"$io.readBytesFull()"
       case BytesTerminatedType(terminator, include, consume, eosError, _) =>
         s"$io.readBytesTerm($terminator, $include, $consume, $eosError)"
-      case BitsType1 =>
-        s"$io.readBitsInt(1) != 0"
-      case BitsType(width: Int) =>
-        s"$io.readBitsInt($width)"
+      case BitsType1(bitEndian) =>
+        s"$io.readBitsInt${Utils.upperCamelCase(bitEndian.toSuffix)}(1) != 0"
+      case BitsType(width: Int, bitEndian) =>
+        s"$io.readBitsInt${Utils.upperCamelCase(bitEndian.toSuffix)}($width)"
       case t: UserType =>
         val parent = t.forcedParent match {
           case Some(USER_TYPE_NO_PARENT) => "null"
@@ -555,6 +555,17 @@ class JavaScriptCompiler(val typeProvider: ClassTypeProvider, config: RuntimeCon
     //out.puts(s"SEQ_FIELDS = [$seqStr]")
   }
 
+  override def classToString(toStringExpr: Ast.expr): Unit = {
+    val className = type2class(translator.provider.nowClass.name.last)
+
+    out.puts
+    out.puts(s"${className}.prototype.toString = function() {")
+    out.inc
+    out.puts(s"return ${translator.translate(toStringExpr)};")
+    out.dec
+    out.puts("}")
+  }
+
   def idToStr(id: Identifier): String = {
     id match {
       case SpecialIdentifier(name) => name
@@ -582,13 +593,13 @@ class JavaScriptCompiler(val typeProvider: ClassTypeProvider, config: RuntimeCon
     attrId: Identifier,
     attrType: DataType,
     checkExpr: Ast.expr,
-    errName: String,
+    err: KSError,
     errArgs: List[Ast.expr]
   ): Unit = {
     val errArgsStr = errArgs.map(translator.translate).mkString(", ")
     out.puts(s"if (!(${translator.translate(checkExpr)})) {")
     out.inc
-    out.puts(s"throw new $errName($errArgsStr);")
+    out.puts(s"throw new ${ksErrorName(err)}($errArgsStr);")
     out.dec
     out.puts("}")
   }
